@@ -1,33 +1,39 @@
 ﻿using SubtitlesParser.Classes;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
+using System.Collections.Specialized;
+using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using GoogleTranslateFreeApi;
-using static GoogleTranslateFreeApi.TranslationData.ExtraTranslations;
+using Newtonsoft.Json;
 
 namespace LEAssistant
 {
     public partial class Form1 : Form
     {
         private List<SubtitleItem> items;
+        public static string BearerCode;
+
+        public string WordsStr = "";
+        public string SafeFileName = "";
+        public string FileName = "";
 
         public Form1()
         {
             InitializeComponent();
         }
 
-        private void button1_Click(object sender, EventArgs e)
+        private async void button1_Click(object sender, EventArgs e)
         {
             var fileContent = string.Empty;
             var filePath = string.Empty;
-
+            await GetBearer();
+            var asd = TranslateWord("I'm robot");
             using (OpenFileDialog openFileDialog = new OpenFileDialog())
             {
                 //openFileDialog.InitialDirectory = "c:\\";
@@ -41,7 +47,7 @@ namespace LEAssistant
                     filePath = openFileDialog.FileName;
 
                     //Read the contents of the file into a stream
-                   // var fileStream = openFileDialog.OpenFile();
+                    // var fileStream = openFileDialog.OpenFile();
 
                     var parser = new SubtitlesParser.Classes.Parsers.SubParser();
                     using (var fileStream = openFileDialog.OpenFile())
@@ -50,64 +56,152 @@ namespace LEAssistant
                     }
 
                 }
-                string str="";
-                foreach (var item in items) 
+
+                SafeFileName = openFileDialog.SafeFileName;
+                FileName = openFileDialog.FileName;
+
+                foreach (var item in items)
                 {
                     foreach (var wordList in item.Lines)
                     {
 
-                        str += wordList+" ";
+                        WordsStr += wordList + " ";
                     }
                 }
-                var words = Regex.Split(Regex.Replace(str.ToLower(), @"[^a-zA-Z ']+", ""), " ")
+
+                var words = Regex.Split(Regex.Replace(WordsStr.ToLower(), @"[^a-zA-Z ']+", ""), " ")
                     .Where(x => !string.IsNullOrEmpty(x))
                     .GroupBy(g => g)
                     .Select(s => new { Word = s.Key, Count = s.Count() });
                 int countwords = 0;
+
                 foreach (var count in words.OrderByDescending(x => x.Count).ToList())
                 {
                     countwords++;
                     Console.WriteLine(count);
                     ListViewItem lvi = new ListViewItem();
                     // установка названия файла
-                    lvi.Text = count.Word+" "+count.Count;
+                    lvi.Text = count.Word + " " + count.Count;
                     listView1.Items.Add(lvi);
                 }
-                Console.WriteLine("count = " + countwords);
             }
-           
+
         }
-        
-        private async void listView1_SelectedIndexChanged(object sender, EventArgs e)
+
+        public Root TranslateWord(string word)
         {
-            try
+            Root root = new Root();
+
+            using (var wb = new WebClient())
             {
-                
-                string word = "";
-                if (listView1.SelectedItems.Count > 0)
+                HttpClient httpClient = new HttpClient
                 {
-                    
-                    word = listView1.SelectedItems[0].Text.ToString().Split(' ')[0];
-                    Console.WriteLine(word);
-                    await TranslateWordAsync(word);
+                    BaseAddress = new Uri("https://developers.lingvolive.com")
+                };
+
+                httpClient.DefaultRequestHeaders.Add($"Authorization", $"Bearer {BearerCode}");
+
+                var result = httpClient.GetAsync($"api/v1/Minicard?text={word}&srcLang=1033&dstLang=1049").Result;
+                var str = result.Content.ReadAsStringAsync();
+
+                if (result.StatusCode != HttpStatusCode.OK)
+                {
+                    return root;
                 }
+
+                var ResultsList = JsonConvert.DeserializeObject<Root>(str.Result);
+
+                root = ResultsList;
             }
-            catch { }
+
+            return root;
         }
-        private async Task<string> TranslateWordAsync(string str)
+
+        public async Task GetBearer()
         {
-            GoogleTranslator translator = new GoogleTranslator();
+            using (var wb = new WebClient())
+            {
+                HttpClient httpClient = new HttpClient
+                {
+                    BaseAddress = new Uri("https://developers.lingvolive.com")
+                };
 
-            var result = await translator.TranslateAsync(str, Language.English, Language.Russian);
+                httpClient.DefaultRequestHeaders.Add($"Authorization", $"Basic MzgyNDdjOTUtNWJkNS00NWVhLWJiOTItNzY2YTlkODY5MTg4OmRlN2Y0MGQ0MTE1ZjQwOTQ5ZTYzYWE0MjYxMGViODcy");
 
-            if (result.ExtraTranslations != null) 
-            { 
-                Console.WriteLine(result.ExtraTranslations.ToString()); 
-                richTextBox1.Text = result.ExtraTranslations.ToString();
+                var result = await httpClient.PostAsync("/api/v1.1/authenticate/", null);
+                BearerCode = await result.Content.ReadAsStringAsync();
+            }
+        }
+
+        public class Root
+        {
+            public int SourceLanguage { get; set; }
+            public int TargetLanguage { get; set; }
+            public string Heading { get; set; }
+            public Translation2 Translation { get; set; }
+            public List<object> SeeAlso { get; set; }
+        }
+
+        public class Translation2
+        {
+            public string Heading { get; set; }
+            public string Translation { get; set; }
+            public string DictionaryName { get; set; }
+            public string SoundName { get; set; }
+            public int Type { get; set; }
+            public string OriginalWord { get; set; }
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            AnkiSharp.Anki ankiList = new AnkiSharp.Anki(SafeFileName);
+
+            var words = Regex.Split(Regex.Replace(WordsStr.ToLower(), @"[^a-zA-Z ']+", ""), " ")
+                .Where(x => !string.IsNullOrEmpty(x))
+                .GroupBy(g => g)
+                .Select(s => new { Word = s.Key, Count = s.Count() });
+
+            foreach (var word in words)
+            {
+                var translate = TranslateWord(word.Word);
+                if (translate.Translation == null) { continue; }
+
+                ankiList.AddItem(translate.Translation.Heading, translate.Translation.Translation);
+
+            }
+            ankiList.CreateApkgFile(FileName.Replace(SafeFileName, ""));
+        }
+
+        private void button3_Click(object sender, EventArgs e)
+        {
+            AnkiSharp.Anki ankiList = new AnkiSharp.Anki("Phrases " + SafeFileName);
+            foreach (var item in items.Take(2))
+            {
+                var translate = TranslateWord(string.Join(" ", item.Lines));
+                if (translate.Translation == null) { continue; }
+
+                ankiList.AddItem(translate.Translation.Heading, translate.Translation.Translation);
+
+            }
+            ankiList.CreateApkgFile(FileName.Replace(SafeFileName, ""));
+
+        }
+
+        private void listView1_DoubleClick(object sender, EventArgs e)
+        {
+            var item = listView1.SelectedItems;
+            if (item.Count <= 0) { return; }
+
+            var str = Regex.Replace(item[0].Text, "[0-9]", "", RegexOptions.IgnoreCase);
+
+            var translate = TranslateWord(str);
+            if (translate.Translation == null)
+            {
+                richTextBox1.Text = "Ошибка";
+                return;
             }
 
-            
-            return "";
+            richTextBox1.Text = translate.Translation.Heading + "\n\n" + translate.Translation.Translation;
         }
     }
 }
